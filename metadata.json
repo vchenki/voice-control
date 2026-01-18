@@ -1,0 +1,7 @@
+{
+  "name": "Prompt Alchemy - Voice to Prompt Optimizer",
+  "description": "A professional AI tool that transforms messy voice inputs into structured, high-quality LLM prompts using Gemini 3 Pro and Live API.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
