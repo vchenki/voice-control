@@ -82,6 +82,7 @@ export default function App() {
   const handleSelectKey = async () => {
     if (window.aistudio && typeof window.aistudio.openSelectKey === 'function') {
       await window.aistudio.openSelectKey();
+      // Assume success as per guidelines to mitigate race condition
       setNeedsApiKey(false);
     }
   };
@@ -117,7 +118,8 @@ export default function App() {
       const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
       audioContextRef.current = audioCtx;
 
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+      // Initialize with process.env.API_KEY directly as required
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         callbacks: {
@@ -127,6 +129,7 @@ export default function App() {
             scriptProcessor.onaudioprocess = (e) => {
               const inputData = e.inputBuffer.getChannelData(0);
               const pcmBlob = createAudioBlob(inputData);
+              // Solely rely on sessionPromise as per guidelines
               sessionPromise.then(session => session.sendRealtimeInput({ media: pcmBlob }));
             };
             source.connect(scriptProcessor);
@@ -140,7 +143,14 @@ export default function App() {
               setTranscript(transcriptRef.current);
             }
           },
-          onerror: (e: any) => handleError('无法连接语音服务'),
+          onerror: (e: any) => {
+            // Reset key selection if entity not found error occurs
+            if (e?.message?.includes('Requested entity was not found.')) {
+              setNeedsApiKey(true);
+              handleSelectKey();
+            }
+            handleError('无法连接语音服务');
+          },
         },
         config: {
           responseModalities: [Modality.AUDIO],
@@ -166,7 +176,8 @@ export default function App() {
     setOptimizedPrompt('');
     let fullText = '';
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+      // Initialize with process.env.API_KEY directly as required
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const responseStream = await ai.models.generateContentStream({
         model: 'gemini-3-flash-preview',
         contents: `你是一名顶级的 AI 提示词架构师。请将以下口语化的语音转录内容转换为一个结构清晰、指令明确、具备背景设定的高质量专业提示词。
@@ -188,6 +199,11 @@ export default function App() {
       }, ...prev]);
       setStatus(AppStatus.FINISHED);
     } catch (err: any) {
+      // Reset key selection if entity not found error occurs
+      if (err?.message?.includes('Requested entity was not found.')) {
+        setNeedsApiKey(true);
+        handleSelectKey();
+      }
       handleError('AI 优化引擎异常');
     }
   };
