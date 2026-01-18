@@ -143,7 +143,8 @@ export default function App() {
             const source = audioCtx.createMediaStreamSource(stream);
             const scriptProcessor = audioCtx.createScriptProcessor(4096, 1, 1);
             scriptProcessorRef.current = scriptProcessor;
-            scriptProcessor.onaudioprocess = (e) => {
+            // 修复：显式指定事件类型 AudioProcessingEvent
+            scriptProcessor.onaudioprocess = (e: AudioProcessingEvent) => {
               const inputData = e.inputBuffer.getChannelData(0);
               const pcmBlob = createAudioBlob(inputData);
               sessionPromise.then(session => {
