@@ -67,7 +67,9 @@ export default function App() {
 
   const audioContextRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
   const transcriptRef = useRef('');
+  const sessionRef = useRef<any>(null);
 
   useEffect(() => {
     const checkKey = async () => {
@@ -82,7 +84,6 @@ export default function App() {
   const handleSelectKey = async () => {
     if (window.aistudio && typeof window.aistudio.openSelectKey === 'function') {
       await window.aistudio.openSelectKey();
-      // Assume success as per guidelines to mitigate race condition
       setNeedsApiKey(false);
     }
   };
@@ -94,6 +95,14 @@ export default function App() {
   };
 
   const stopListeningInternal = () => {
+    if (sessionRef.current) {
+      try { sessionRef.current.close(); } catch(e) {}
+      sessionRef.current = null;
+    }
+    if (scriptProcessorRef.current) {
+      scriptProcessorRef.current.disconnect();
+      scriptProcessorRef.current = null;
+    }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
@@ -107,6 +116,11 @@ export default function App() {
   };
 
   const startListening = async () => {
+    // 按照指导原则，如果可能存在竞态，假设选择成功并继续
+    if (needsApiKey) {
+      await handleSelectKey();
+    }
+
     setError(null);
     setTranscript('');
     setOptimizedPrompt('');
@@ -115,10 +129,10 @@ export default function App() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
+      
       const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
       audioContextRef.current = audioCtx;
 
-      // Initialize with process.env.API_KEY directly as required
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
@@ -126,12 +140,19 @@ export default function App() {
           onopen: () => {
             const source = audioCtx.createMediaStreamSource(stream);
             const scriptProcessor = audioCtx.createScriptProcessor(4096, 1, 1);
+            // 关键：将引用存入 Ref，防止被垃圾回收
+            scriptProcessorRef.current = scriptProcessor;
+
             scriptProcessor.onaudioprocess = (e) => {
               const inputData = e.inputBuffer.getChannelData(0);
               const pcmBlob = createAudioBlob(inputData);
-              // Solely rely on sessionPromise as per guidelines
-              sessionPromise.then(session => session.sendRealtimeInput({ media: pcmBlob }));
+              // 按照指导原则，通过 sessionPromise 发送数据以避免闭包陷阱
+              sessionPromise.then(session => {
+                sessionRef.current = session;
+                session.sendRealtimeInput({ media: pcmBlob });
+              });
             };
+            
             source.connect(scriptProcessor);
             scriptProcessor.connect(audioCtx.destination);
             setStatus(AppStatus.LISTENING);
@@ -144,13 +165,20 @@ export default function App() {
             }
           },
           onerror: (e: any) => {
-            // Reset key selection if entity not found error occurs
+            console.error('Live API Error:', e);
             if (e?.message?.includes('Requested entity was not found.')) {
               setNeedsApiKey(true);
               handleSelectKey();
             }
-            handleError('无法连接语音服务');
+            handleError('语音引擎连接中断，请检查网络或密钥。');
           },
+          onclose: () => {
+            console.log('Live API Connection Closed');
+            // 如果是在录制中途非预期关闭
+            if (status === AppStatus.LISTENING) {
+              stopListening();
+            }
+          }
         },
         config: {
           responseModalities: [Modality.AUDIO],
@@ -158,14 +186,17 @@ export default function App() {
         }
       });
     } catch (err: any) {
-      handleError('未检测到麦克风权限');
+      console.error('Media Access Error:', err);
+      handleError('无法获取麦克风权限。');
     }
   };
 
   const stopListening = async () => {
+    const finalTranscript = transcriptRef.current.trim();
     stopListeningInternal();
-    if (transcriptRef.current.trim()) {
-      optimizePrompt(transcriptRef.current);
+    
+    if (finalTranscript) {
+      optimizePrompt(finalTranscript);
     } else {
       setStatus(AppStatus.IDLE);
     }
@@ -176,7 +207,6 @@ export default function App() {
     setOptimizedPrompt('');
     let fullText = '';
     try {
-      // Initialize with process.env.API_KEY directly as required
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const responseStream = await ai.models.generateContentStream({
         model: 'gemini-3-flash-preview',
@@ -199,12 +229,11 @@ export default function App() {
       }, ...prev]);
       setStatus(AppStatus.FINISHED);
     } catch (err: any) {
-      // Reset key selection if entity not found error occurs
       if (err?.message?.includes('Requested entity was not found.')) {
         setNeedsApiKey(true);
         handleSelectKey();
       }
-      handleError('AI 优化引擎异常');
+      handleError('提示词炼制失败，请重试。');
     }
   };
 
@@ -234,9 +263,7 @@ export default function App() {
           </div>
         )}
 
-        {/* 核心工作室布局 */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
-          
           {/* 左侧：输入/转录卡片 */}
           <section className={`studio-card p-8 rounded-[2rem] flex flex-col min-h-[460px] ${status === AppStatus.LISTENING ? 'ring-2 ring-indigo-500 ring-offset-4' : ''}`}>
             <div className="flex items-center justify-between mb-8 border-b border-slate-50 pb-4">
@@ -261,7 +288,7 @@ export default function App() {
                 </div>
               ) : (
                 <div className="text-2xl font-bold text-slate-800 leading-snug overflow-y-auto max-h-[300px] pr-2 scrollbar-thin">
-                  {transcript}
+                  {transcript || (status === AppStatus.LISTENING ? "正在倾听您的灵感..." : "")}
                   {status === AppStatus.LISTENING && <span className="inline-block w-0.5 h-6 bg-indigo-500 ml-1 animate-pulse"></span>}
                 </div>
               )}
@@ -269,11 +296,15 @@ export default function App() {
 
             <div className="mt-10 flex justify-center">
               {status === AppStatus.LISTENING ? (
-                <button onClick={stopListening} className="recording-ring w-16 h-16 rounded-full bg-slate-900 flex items-center justify-center text-white shadow-lg">
+                <button onClick={stopListening} className="recording-ring w-16 h-16 rounded-full bg-slate-900 flex items-center justify-center text-white shadow-lg transition-transform hover:scale-105 active:scale-95">
                   <i className="fa-solid fa-square text-lg"></i>
                 </button>
               ) : (
-                <button onClick={startListening} className="primary-button w-16 h-16 rounded-full flex items-center justify-center shadow-lg">
+                <button 
+                  onClick={startListening} 
+                  disabled={status === AppStatus.OPTIMIZING}
+                  className="primary-button w-16 h-16 rounded-full flex items-center justify-center shadow-lg disabled:opacity-50 transition-transform hover:scale-105 active:scale-95"
+                >
                   <i className="fa-solid fa-microphone text-xl"></i>
                 </button>
               )}

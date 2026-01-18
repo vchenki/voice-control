@@ -31,6 +31,11 @@ declare global {
   }
 
   interface Window {
-    aistudio: AIStudio;
+    /**
+     * The aistudio object is injected by the environment. 
+     * Added the optional modifier to resolve the "All declarations of 'aistudio' must have identical modifiers" error,
+     * as the environment-provided definition often marks it as optional or has specific modifiers.
+     */
+    aistudio?: AIStudio;
   }
 }
