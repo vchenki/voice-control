@@ -116,7 +116,18 @@ export default function App() {
   };
 
   const startListening = async () => {
-    // 按照指导原则，如果可能存在竞态，假设选择成功并继续
+    // 1. 环境检查
+    if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
+      handleError('麦克风访问需要 HTTPS 环境。');
+      return;
+    }
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      handleError('您的浏览器不支持麦克风访问。');
+      return;
+    }
+
+    // 2. 预先处理 API Key
     if (needsApiKey) {
       await handleSelectKey();
     }
@@ -127,11 +138,19 @@ export default function App() {
     transcriptRef.current = '';
 
     try {
+      // 3. 立即创建 AudioContext 以确保在用户手势链中
+      const AudioCtxClass = (window as any).AudioContext || (window as any).webkitAudioContext;
+      const audioCtx = new AudioCtxClass({ sampleRate: 16000 });
+      audioContextRef.current = audioCtx;
+      
+      // 如果上下文是挂起状态，尝试恢复
+      if (audioCtx.state === 'suspended') {
+        await audioCtx.resume();
+      }
+
+      // 4. 请求媒体流
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
-      
-      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
-      audioContextRef.current = audioCtx;
 
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const sessionPromise = ai.live.connect({
@@ -140,13 +159,11 @@ export default function App() {
           onopen: () => {
             const source = audioCtx.createMediaStreamSource(stream);
             const scriptProcessor = audioCtx.createScriptProcessor(4096, 1, 1);
-            // 关键：将引用存入 Ref，防止被垃圾回收
             scriptProcessorRef.current = scriptProcessor;
 
             scriptProcessor.onaudioprocess = (e) => {
               const inputData = e.inputBuffer.getChannelData(0);
               const pcmBlob = createAudioBlob(inputData);
-              // 按照指导原则，通过 sessionPromise 发送数据以避免闭包陷阱
               sessionPromise.then(session => {
                 sessionRef.current = session;
                 session.sendRealtimeInput({ media: pcmBlob });
@@ -170,11 +187,9 @@ export default function App() {
               setNeedsApiKey(true);
               handleSelectKey();
             }
-            handleError('语音引擎连接中断，请检查网络或密钥。');
+            handleError('语音引擎连接中断，请重试。');
           },
           onclose: () => {
-            console.log('Live API Connection Closed');
-            // 如果是在录制中途非预期关闭
             if (status === AppStatus.LISTENING) {
               stopListening();
             }
@@ -186,8 +201,16 @@ export default function App() {
         }
       });
     } catch (err: any) {
-      console.error('Media Access Error:', err);
-      handleError('无法获取麦克风权限。');
+      console.error('Microphone Permission/Access Error:', err);
+      let errorMsg = '无法获取麦克风权限。';
+      if (err.name === 'NotAllowedError') {
+        errorMsg = '麦克风权限已被拒绝，请在浏览器设置中开启。';
+      } else if (err.name === 'NotFoundError') {
+        errorMsg = '未检测到麦克风设备。';
+      } else if (err.name === 'NotReadableError') {
+        errorMsg = '麦克风被其他程序占用。';
+      }
+      handleError(errorMsg);
     }
   };
 
@@ -264,7 +287,6 @@ export default function App() {
         )}
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
-          {/* 左侧：输入/转录卡片 */}
           <section className={`studio-card p-8 rounded-[2rem] flex flex-col min-h-[460px] ${status === AppStatus.LISTENING ? 'ring-2 ring-indigo-500 ring-offset-4' : ''}`}>
             <div className="flex items-center justify-between mb-8 border-b border-slate-50 pb-4">
               <div className="flex items-center gap-3">
@@ -311,7 +333,6 @@ export default function App() {
             </div>
           </section>
 
-          {/* 右侧：结果/精炼卡片 */}
           <section className="studio-card p-8 rounded-[2rem] flex flex-col min-h-[460px] relative">
             <div className="flex items-center justify-between mb-8 border-b border-slate-50 pb-4">
               <div className="flex items-center gap-3">
@@ -361,7 +382,6 @@ export default function App() {
           </section>
         </div>
 
-        {/* 历史档案区 */}
         {history.length > 0 && (
           <section className="mt-12 pb-12">
             <div className="flex items-center gap-4 mb-10 opacity-60">
