@@ -15,7 +15,7 @@ const Header: React.FC = () => (
         Prompt Alchemy
       </h1>
       <p className="text-slate-500 font-medium text-sm max-w-sm mx-auto">
-        捕获转瞬即逝的语音灵感，炼制逻辑严密的 AI 指令。
+        捕获转瞬即逝的灵感，炼制逻辑严密的 AI 指令。
       </p>
     </div>
   </header>
@@ -23,7 +23,7 @@ const Header: React.FC = () => (
 
 // --- History Card ---
 const HistoryCard: React.FC<{ item: HistoryItem; onCopy: (text: string) => void }> = ({ item, onCopy }) => (
-  <div className="studio-card p-5 rounded-2xl group relative">
+  <div className="studio-card p-5 rounded-2xl group relative bg-white">
     <div className="flex justify-between items-center mb-4">
       <span className="text-[10px] font-bold text-slate-400 mono-font uppercase tracking-widest bg-slate-50 px-2 py-1 rounded">
         {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -57,9 +57,13 @@ const Footer: React.FC = () => (
   </footer>
 );
 
+type InputMode = 'voice' | 'text';
+
 export default function App() {
   const [status, setStatus] = useState<AppStatus>(AppStatus.IDLE);
+  const [inputMode, setInputMode] = useState<InputMode>('voice');
   const [transcript, setTranscript] = useState('');
+  const [manualText, setManualText] = useState('');
   const [optimizedPrompt, setOptimizedPrompt] = useState('');
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -73,7 +77,7 @@ export default function App() {
 
   useEffect(() => {
     const checkKey = async () => {
-      if (window.aistudio && typeof window.aistudio.hasSelectedApiKey === 'function') {
+      if (window.aistudio?.hasSelectedApiKey) {
         const hasKey = await window.aistudio.hasSelectedApiKey();
         setNeedsApiKey(!hasKey);
       }
@@ -82,7 +86,7 @@ export default function App() {
   }, []);
 
   const handleSelectKey = async () => {
-    if (window.aistudio && typeof window.aistudio.openSelectKey === 'function') {
+    if (window.aistudio?.openSelectKey) {
       await window.aistudio.openSelectKey();
       setNeedsApiKey(false);
     }
@@ -116,39 +120,18 @@ export default function App() {
   };
 
   const startListening = async () => {
-    // 1. 环境检查
-    if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
-      handleError('麦克风访问需要 HTTPS 环境。');
-      return;
-    }
-
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      handleError('您的浏览器不支持麦克风访问。');
-      return;
-    }
-
-    // 2. 预先处理 API Key
-    if (needsApiKey) {
-      await handleSelectKey();
-    }
-
+    if (needsApiKey) await handleSelectKey();
     setError(null);
     setTranscript('');
     setOptimizedPrompt('');
     transcriptRef.current = '';
 
     try {
-      // 3. 立即创建 AudioContext 以确保在用户手势链中
       const AudioCtxClass = (window as any).AudioContext || (window as any).webkitAudioContext;
       const audioCtx = new AudioCtxClass({ sampleRate: 16000 });
       audioContextRef.current = audioCtx;
-      
-      // 如果上下文是挂起状态，尝试恢复
-      if (audioCtx.state === 'suspended') {
-        await audioCtx.resume();
-      }
+      if (audioCtx.state === 'suspended') await audioCtx.resume();
 
-      // 4. 请求媒体流
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
 
@@ -160,7 +143,6 @@ export default function App() {
             const source = audioCtx.createMediaStreamSource(stream);
             const scriptProcessor = audioCtx.createScriptProcessor(4096, 1, 1);
             scriptProcessorRef.current = scriptProcessor;
-
             scriptProcessor.onaudioprocess = (e) => {
               const inputData = e.inputBuffer.getChannelData(0);
               const pcmBlob = createAudioBlob(inputData);
@@ -169,7 +151,6 @@ export default function App() {
                 session.sendRealtimeInput({ media: pcmBlob });
               });
             };
-            
             source.connect(scriptProcessor);
             scriptProcessor.connect(audioCtx.destination);
             setStatus(AppStatus.LISTENING);
@@ -182,17 +163,14 @@ export default function App() {
             }
           },
           onerror: (e: any) => {
-            console.error('Live API Error:', e);
             if (e?.message?.includes('Requested entity was not found.')) {
               setNeedsApiKey(true);
               handleSelectKey();
             }
-            handleError('语音引擎连接中断，请重试。');
+            handleError('语音连接中断，请检查设置。');
           },
           onclose: () => {
-            if (status === AppStatus.LISTENING) {
-              stopListening();
-            }
+            if (status === AppStatus.LISTENING) stopListening();
           }
         },
         config: {
@@ -201,27 +179,23 @@ export default function App() {
         }
       });
     } catch (err: any) {
-      console.error('Microphone Permission/Access Error:', err);
-      let errorMsg = '无法获取麦克风权限。';
-      if (err.name === 'NotAllowedError') {
-        errorMsg = '麦克风权限已被拒绝，请在浏览器设置中开启。';
-      } else if (err.name === 'NotFoundError') {
-        errorMsg = '未检测到麦克风设备。';
-      } else if (err.name === 'NotReadableError') {
-        errorMsg = '麦克风被其他程序占用。';
-      }
-      handleError(errorMsg);
+      handleError('无法开启麦克风，请检查权限。');
     }
   };
 
   const stopListening = async () => {
     const finalTranscript = transcriptRef.current.trim();
     stopListeningInternal();
-    
     if (finalTranscript) {
       optimizePrompt(finalTranscript);
     } else {
       setStatus(AppStatus.IDLE);
+    }
+  };
+
+  const handleManualSubmit = () => {
+    if (manualText.trim()) {
+      optimizePrompt(manualText.trim());
     }
   };
 
@@ -233,7 +207,7 @@ export default function App() {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const responseStream = await ai.models.generateContentStream({
         model: 'gemini-3-flash-preview',
-        contents: `你是一名顶级的 AI 提示词架构师。请将以下口语化的语音转录内容转换为一个结构清晰、指令明确、具备背景设定的高质量专业提示词。
+        contents: `你是一名顶级的 AI 提示词架构师。请将以下口语化的内容转换为一个结构清晰、指令明确、具备背景设定的高质量专业提示词。
 内容： "${rawInput}"
 仅输出 Markdown 格式的提示词。不要包含多余说明。`,
       });
@@ -256,7 +230,7 @@ export default function App() {
         setNeedsApiKey(true);
         handleSelectKey();
       }
-      handleError('提示词炼制失败，请重试。');
+      handleError('炼制失败，请检查网络或密钥。');
     }
   };
 
@@ -264,97 +238,124 @@ export default function App() {
     navigator.clipboard.writeText(text);
   };
 
-  const handleRegenerate = () => {
-    if (transcriptRef.current.trim()) {
-      optimizePrompt(transcriptRef.current);
-    }
-  };
-
   return (
     <div className="min-h-screen flex flex-col max-w-6xl mx-auto px-6">
       <Header />
 
       <main className="flex-grow flex flex-col gap-10">
-        
         {needsApiKey && (
           <div className="bg-amber-50 border border-amber-100 p-4 rounded-xl flex items-center justify-between mb-2">
             <div className="flex items-center gap-3 text-amber-800 text-xs font-semibold">
               <i className="fa-solid fa-key"></i>
-              <span>连接您的专属 API 密钥以解锁炼金全速模式。</span>
+              <span>连接您的专属 API 密钥以解锁全速炼金模式。</span>
             </div>
             <button onClick={handleSelectKey} className="px-4 py-1.5 bg-amber-600 text-white rounded-lg text-xs font-bold transition-all hover:bg-amber-700">配置密钥</button>
           </div>
         )}
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
-          <section className={`studio-card p-8 rounded-[2rem] flex flex-col min-h-[460px] ${status === AppStatus.LISTENING ? 'ring-2 ring-indigo-500 ring-offset-4' : ''}`}>
+          {/* Left Column: Input */}
+          <section className={`studio-card p-8 rounded-[2rem] flex flex-col min-h-[500px] transition-all ${status === AppStatus.LISTENING ? 'ring-2 ring-indigo-500 ring-offset-4' : ''}`}>
+            
+            {/* Mode Toggle */}
             <div className="flex items-center justify-between mb-8 border-b border-slate-50 pb-4">
-              <div className="flex items-center gap-3">
-                <span className={`w-2 h-2 rounded-full ${status === AppStatus.LISTENING ? 'bg-rose-500' : 'bg-slate-300'}`}></span>
-                <h3 className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-500">Capture Input</h3>
+              <div className="flex bg-slate-100 p-1 rounded-xl">
+                <button 
+                  onClick={() => setInputMode('voice')}
+                  disabled={status === AppStatus.LISTENING}
+                  className={`px-4 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all ${inputMode === 'voice' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+                >
+                  <i className="fa-solid fa-microphone mr-2"></i>Voice
+                </button>
+                <button 
+                  onClick={() => setInputMode('text')}
+                  disabled={status === AppStatus.LISTENING}
+                  className={`px-4 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all ${inputMode === 'text' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+                >
+                  <i className="fa-solid fa-keyboard mr-2"></i>Text
+                </button>
               </div>
               {status === AppStatus.LISTENING && (
-                <span className="text-[10px] font-bold text-rose-500 animate-pulse">RECORDING...</span>
+                <span className="text-[10px] font-bold text-rose-500 animate-pulse">CAPTURING...</span>
               )}
             </div>
             
             <div className="flex-grow flex flex-col overflow-hidden">
-              {status === AppStatus.IDLE ? (
-                <div className="flex-grow flex flex-col items-center justify-center text-center px-6">
-                  <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mb-6">
-                    <i className="fa-solid fa-microphone text-slate-300 text-xl"></i>
+              {inputMode === 'voice' ? (
+                /* Voice Interface */
+                <div className="flex-grow flex flex-col">
+                  {status === AppStatus.IDLE ? (
+                    <div className="flex-grow flex flex-col items-center justify-center text-center opacity-40">
+                      <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mb-6">
+                        <i className="fa-solid fa-microphone text-slate-300 text-xl"></i>
+                      </div>
+                      <p className="text-slate-500 text-sm font-medium leading-relaxed">按下按钮，开始诉说灵感</p>
+                    </div>
+                  ) : (
+                    <div className="text-2xl font-bold text-slate-800 leading-snug overflow-y-auto max-h-[300px] pr-2 scrollbar-thin">
+                      {transcript || "正在倾听..."}
+                      {status === AppStatus.LISTENING && <span className="inline-block w-0.5 h-6 bg-indigo-500 ml-1 animate-pulse"></span>}
+                    </div>
+                  )}
+                  <div className="mt-auto pt-10 flex justify-center">
+                    {status === AppStatus.LISTENING ? (
+                      <button onClick={stopListening} className="recording-ring w-16 h-16 rounded-full bg-slate-900 flex items-center justify-center text-white shadow-lg">
+                        <i className="fa-solid fa-square text-lg"></i>
+                      </button>
+                    ) : (
+                      <button 
+                        onClick={startListening} 
+                        disabled={status === AppStatus.OPTIMIZING}
+                        className="primary-button w-16 h-16 rounded-full flex items-center justify-center shadow-lg disabled:opacity-50"
+                      >
+                        <i className="fa-solid fa-microphone text-xl"></i>
+                      </button>
+                    )}
                   </div>
-                  <p className="text-slate-400 text-sm font-medium leading-relaxed">
-                    点击下方录音，说出您的想法。<br/>我们将为您捕捉每一个细微的灵感。
-                  </p>
                 </div>
               ) : (
-                <div className="text-2xl font-bold text-slate-800 leading-snug overflow-y-auto max-h-[300px] pr-2 scrollbar-thin">
-                  {transcript || (status === AppStatus.LISTENING ? "正在倾听您的灵感..." : "")}
-                  {status === AppStatus.LISTENING && <span className="inline-block w-0.5 h-6 bg-indigo-500 ml-1 animate-pulse"></span>}
+                /* Text Interface */
+                <div className="flex-grow flex flex-col">
+                  <textarea 
+                    value={manualText}
+                    onChange={(e) => setManualText(e.target.value)}
+                    placeholder="在此处粘贴或输入您的草稿..."
+                    className="flex-grow bg-slate-50/50 rounded-2xl p-6 text-slate-700 text-sm font-medium resize-none border border-slate-100 focus:border-indigo-200 focus:ring-0 outline-none transition-all scrollbar-thin"
+                  />
+                  <div className="mt-6 flex justify-center">
+                    <button 
+                      onClick={handleManualSubmit}
+                      disabled={!manualText.trim() || status === AppStatus.OPTIMIZING}
+                      className="w-full py-4 bg-slate-900 text-white rounded-xl font-bold text-xs uppercase tracking-widest flex items-center justify-center gap-3 transition-all hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      <i className="fa-solid fa-wand-magic-sparkles"></i>
+                      Refine Content
+                    </button>
+                  </div>
                 </div>
-              )}
-            </div>
-
-            <div className="mt-10 flex justify-center">
-              {status === AppStatus.LISTENING ? (
-                <button onClick={stopListening} className="recording-ring w-16 h-16 rounded-full bg-slate-900 flex items-center justify-center text-white shadow-lg transition-transform hover:scale-105 active:scale-95">
-                  <i className="fa-solid fa-square text-lg"></i>
-                </button>
-              ) : (
-                <button 
-                  onClick={startListening} 
-                  disabled={status === AppStatus.OPTIMIZING}
-                  className="primary-button w-16 h-16 rounded-full flex items-center justify-center shadow-lg disabled:opacity-50 transition-transform hover:scale-105 active:scale-95"
-                >
-                  <i className="fa-solid fa-microphone text-xl"></i>
-                </button>
               )}
             </div>
           </section>
 
-          <section className="studio-card p-8 rounded-[2rem] flex flex-col min-h-[460px] relative">
+          {/* Right Column: Output */}
+          <section className="studio-card p-8 rounded-[2rem] flex flex-col min-h-[500px] relative bg-white">
             <div className="flex items-center justify-between mb-8 border-b border-slate-50 pb-4">
               <div className="flex items-center gap-3">
                 <span className={`w-2 h-2 rounded-full ${status === AppStatus.OPTIMIZING ? 'bg-indigo-500 animate-pulse' : 'bg-slate-300'}`}></span>
-                <h3 className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-500">Refined Prompt</h3>
+                <h3 className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-500">Refined Result</h3>
               </div>
             </div>
             
             <div className="flex-grow flex flex-col">
               {status === AppStatus.OPTIMIZING || (status === AppStatus.FINISHED && optimizedPrompt) ? (
                 <div className="h-full flex flex-col">
-                  <div className="flex-grow bg-slate-50/50 rounded-2xl p-6 mono-font text-[13px] text-slate-700 whitespace-pre-wrap overflow-y-auto max-h-[320px] leading-relaxed border border-slate-100 cursor-active">
+                  <div className="flex-grow bg-slate-50/50 rounded-2xl p-6 mono-font text-[13px] text-slate-700 whitespace-pre-wrap overflow-y-auto max-h-[340px] leading-relaxed border border-slate-100 cursor-active">
                     {optimizedPrompt}
                   </div>
-                  
                   {status === AppStatus.FINISHED && (
                     <div className="mt-8 flex gap-3">
                       <button onClick={() => handleCopy(optimizedPrompt)} className="flex-1 primary-button py-3 rounded-xl font-bold text-xs uppercase tracking-widest flex items-center justify-center gap-2">
-                        <i className="fa-regular fa-copy"></i> Copy
-                      </button>
-                      <button onClick={handleRegenerate} className="secondary-button px-5 rounded-xl text-xs font-bold uppercase tracking-widest flex items-center gap-2">
-                        <i className="fa-solid fa-arrows-rotate"></i>
+                        <i className="fa-regular fa-copy"></i> Copy Prompt
                       </button>
                       <button onClick={() => setStatus(AppStatus.IDLE)} className="secondary-button px-5 rounded-xl transition-colors text-rose-500 hover:bg-rose-50 border-rose-100">
                         <i className="fa-solid fa-trash-can"></i>
@@ -366,32 +367,27 @@ export default function App() {
                 <div className="flex-grow flex flex-col items-center justify-center text-center p-6 bg-rose-50/50 rounded-2xl border border-rose-100">
                    <i className="fa-solid fa-circle-exclamation text-rose-400 text-2xl mb-4"></i>
                    <p className="text-rose-900 font-bold text-sm mb-6">{error}</p>
-                   <button onClick={handleRegenerate} className="px-6 py-2 bg-rose-500 text-white rounded-lg font-bold text-xs uppercase transition-all hover:bg-rose-600">
-                     Retry Alchemy
-                   </button>
+                   <button onClick={() => setStatus(AppStatus.IDLE)} className="px-6 py-2 bg-rose-500 text-white rounded-lg font-bold text-xs uppercase">Dismiss</button>
                 </div>
               ) : (
-                <div className="flex-grow flex flex-col items-center justify-center opacity-30">
-                  <div className="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mb-6">
-                    <i className="fa-solid fa-wand-sparkles text-slate-400 text-xl"></i>
-                  </div>
-                  <p className="text-slate-500 font-bold uppercase tracking-[0.2em] text-[10px]">Awaiting Essence</p>
+                <div className="flex-grow flex flex-col items-center justify-center opacity-20">
+                  <i className="fa-solid fa-sparkles text-slate-400 text-3xl mb-4"></i>
+                  <p className="text-slate-500 font-bold uppercase tracking-[0.2em] text-[10px]">Awaiting Input</p>
                 </div>
               )}
             </div>
           </section>
         </div>
 
+        {/* Archives */}
         {history.length > 0 && (
           <section className="mt-12 pb-12">
             <div className="flex items-center gap-4 mb-10 opacity-60">
-              <span className="text-[10px] font-black uppercase tracking-[0.5em] text-slate-400">Archives</span>
+              <span className="text-[10px] font-black uppercase tracking-[0.5em] text-slate-400">Recent Archives</span>
               <div className="h-px flex-grow bg-slate-200"></div>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {history.map(item => (
-                <HistoryCard key={item.id} item={item} onCopy={handleCopy} />
-              ))}
+              {history.map(item => <HistoryCard key={item.id} item={item} onCopy={handleCopy} />)}
             </div>
           </section>
         )}
